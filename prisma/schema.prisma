@@ -1,0 +1,289 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum ProjectStatus {
+  ACTIVE
+  PAUSED
+  COMPLETED
+  CANCELLED
+}
+
+enum PartyType {
+  SUPPLIER
+  MANDOR
+  SUBKON
+  VENDOR
+  CUSTOMER
+  OTHER
+}
+
+enum TaxStatus {
+  TAXABLE
+  NON_TAXABLE
+  EXEMPT
+}
+
+enum WithholdingType {
+  NONE
+  PPH23
+  PPH4_2
+  PPH26
+  PPH21
+}
+
+enum PettyCashStatus {
+  DRAFT
+  SUBMITTED
+  APPROVED
+  REJECTED
+  POSTED
+}
+
+enum InvoiceStatus {
+  DRAFT
+  VERIFIED
+  APPROVED
+  PAID
+  REJECTED
+}
+
+enum TransactionType {
+  EXPENSE
+  INCOME
+  PAYMENT
+  JOURNAL
+}
+
+model Company {
+  id          String    @id @default(uuid()) @db.Uuid
+  code        String    @unique
+  name        String
+  npwp        String?
+  address     String?
+  email       String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  users       User[]
+  projects    Project[]
+  parties     Party[]
+  pettyCashRequests PettyCashRequest[]
+  invoices    Invoice[]
+  journalEntries JournalEntry[]
+  transactions Transaction[]
+}
+
+model User {
+  id          String    @id @default(uuid()) @db.Uuid
+  companyId   String?   @db.Uuid
+  username    String    @unique
+  fullName    String
+  email       String    @unique
+  passwordHash String
+  phone       String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  company     Company?  @relation(fields: [companyId], references: [id], onDelete: SetNull)
+  projects    Project[] @relation("ProjectCreatedBy")
+  projectMembers ProjectMember[]
+  pettyCashRequests PettyCashRequest[]
+  approvals   Approval[]
+}
+
+model Project {
+  id          String      @id @default(uuid()) @db.Uuid
+  companyId   String      @db.Uuid
+  code        String
+  name        String
+  status      ProjectStatus @default(ACTIVE)
+  contractValue Decimal   @default(0) @db.Decimal(18,2)
+  location    String?
+  clientName  String?
+  startDate   DateTime?   @db.Date
+  endDate     DateTime?   @db.Date
+  createdById String?     @db.Uuid
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  company     Company     @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  creator     User?       @relation("ProjectCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  members     ProjectMember[]
+  pettyCashRequests PettyCashRequest[]
+  journalEntries JournalEntry[]
+  transactions Transaction[]
+
+  @@unique([companyId, code])
+}
+
+model ProjectMember {
+  id          String   @id @default(uuid()) @db.Uuid
+  projectId   String   @db.Uuid
+  userId      String   @db.Uuid
+  role        String
+  createdAt   DateTime @default(now())
+
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, userId])
+}
+
+model Party {
+  id          String   @id @default(uuid()) @db.Uuid
+  companyId   String   @db.Uuid
+  name        String
+  type        PartyType
+  npwp        String?
+  isPkp       Boolean  @default(false)
+  address     String?
+  email       String?
+  phone       String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  company     Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  taxProfile  TaxProfile?
+  invoices    Invoice[]
+  transactions Transaction[]
+
+  @@unique([companyId, name])
+}
+
+model TaxProfile {
+  id               String          @id @default(uuid()) @db.Uuid
+  partyId          String          @unique @db.Uuid
+  npwpStatus       String          @default("HAS_NPWP")
+  pkpStatus        String          @default("PKP")
+  vatStatus        TaxStatus       @default(NON_TAXABLE)
+  vatRate          Decimal         @default(0) @db.Decimal(5,2)
+  withholdingType  WithholdingType @default(NONE)
+  withholdingRate  Decimal         @default(0) @db.Decimal(5,2)
+  effectiveFrom    DateTime        @default(now()) @db.Date
+  effectiveTo      DateTime?       @db.Date
+  notes            String?
+
+  party            Party           @relation(fields: [partyId], references: [id], onDelete: Cascade)
+}
+
+model PettyCashRequest {
+  id            String   @id @default(uuid()) @db.Uuid
+  companyId     String   @db.Uuid
+  projectId     String?  @db.Uuid
+  createdById   String   @db.Uuid
+  requestNumber String
+  requestDate   DateTime @default(now()) @db.Date
+  purpose       String
+  note          String?
+  amount        Decimal  @default(0) @db.Decimal(18,2)
+  status        PettyCashStatus @default(SUBMITTED)
+  createdAt     DateTime @default(now())
+
+  company       Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  project       Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  creator       User     @relation(fields: [createdById], references: [id], onDelete: Cascade)
+  items         PettyCashItem[]
+  approvals     Approval[]
+
+  @@unique([companyId, requestNumber])
+}
+
+model PettyCashItem {
+  id            String   @id @default(uuid()) @db.Uuid
+  requestId     String   @db.Uuid
+  itemName      String
+  category      String
+  quantity      Decimal  @default(0) @db.Decimal(18,3)
+  unitPrice     Decimal  @default(0) @db.Decimal(18,2)
+  totalAmount   Decimal  @default(0) @db.Decimal(18,2)
+  createdAt     DateTime @default(now())
+
+  request       PettyCashRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+}
+
+model Invoice {
+  id          String   @id @default(uuid()) @db.Uuid
+  companyId   String   @db.Uuid
+  projectId   String?  @db.Uuid
+  partyId     String?  @db.Uuid
+  invoiceNumber String
+  invoiceDate DateTime @default(now()) @db.Date
+  dueDate     DateTime? @db.Date
+  grossAmount Decimal @default(0) @db.Decimal(18,2)
+  vatAmount   Decimal @default(0) @db.Decimal(18,2)
+  withholdingAmount Decimal @default(0) @db.Decimal(18,2)
+  netAmount   Decimal @default(0) @db.Decimal(18,2)
+  status      InvoiceStatus @default(DRAFT)
+  createdAt   DateTime @default(now())
+
+  company     Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  project     Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  party       Party?   @relation(fields: [partyId], references: [id], onDelete: SetNull)
+
+  @@unique([companyId, invoiceNumber])
+}
+
+model Transaction {
+  id            String         @id @default(uuid()) @db.Uuid
+  companyId     String         @db.Uuid
+  projectId     String?        @db.Uuid
+  partyId       String?        @db.Uuid
+  type          TransactionType @default(EXPENSE)
+  description   String
+  grossAmount   Decimal        @default(0) @db.Decimal(18,2)
+  vatAmount     Decimal        @default(0) @db.Decimal(18,2)
+  withholdingAmount Decimal      @default(0) @db.Decimal(18,2)
+  netAmount     Decimal        @default(0) @db.Decimal(18,2)
+  taxStatus     TaxStatus      @default(NON_TAXABLE)
+  createdAt     DateTime       @default(now())
+
+  company       Company        @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  project       Project?       @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  party         Party?         @relation(fields: [partyId], references: [id], onDelete: SetNull)
+}
+
+model JournalEntry {
+  id            String   @id @default(uuid()) @db.Uuid
+  companyId     String   @db.Uuid
+  projectId     String?  @db.Uuid
+  entryNumber   String
+  description   String
+  postedAt      DateTime? @db.Timestamp()
+  createdAt     DateTime @default(now())
+
+  company       Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  project       Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  lines         JournalLine[]
+
+  @@unique([companyId, entryNumber])
+}
+
+model JournalLine {
+  id          String   @id @default(uuid()) @db.Uuid
+  journalId   String   @db.Uuid
+  accountCode String
+  debit       Decimal  @default(0) @db.Decimal(18,2)
+  credit      Decimal  @default(0) @db.Decimal(18,2)
+  description String?
+
+  journal     JournalEntry @relation(fields: [journalId], references: [id], onDelete: Cascade)
+}
+
+model Approval {
+  id          String   @id @default(uuid()) @db.Uuid
+  requestType String
+  requestId   String   @db.Uuid
+  approverId  String   @db.Uuid
+  status      String   @default("PENDING")
+  notes       String?
+  approvedAt  DateTime?
+
+  approver    User     @relation(fields: [approverId], references: [id], onDelete: Cascade)
+  pettyCashRequest PettyCashRequest? @relation(fields: [requestId], references: [id], onDelete: Cascade)
+}
