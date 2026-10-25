@@ -1,0 +1,65 @@
+name: MODEZTYPROkon CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-and-validate:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: modeztyprokon
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres -d modeztyprokon"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/modeztyprokon?schema=public
+      JWT_SECRET: modeztyprokon-dev-secret
+      PORT: 3000
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Copy env for CI
+        run: cp .env.example .env
+
+      - name: Generate Prisma client
+        run: npx prisma generate
+
+      - name: Run Prisma migration
+        run: npx prisma migrate deploy
+
+      - name: Seed database
+        run: npm run prisma:seed
+
+      - name: Build project
+        run: npm run build
+
+      - name: Start app smoke test
+        run: |
+          npm run dev > /tmp/modeztyprokon.log 2>&1 &
+          sleep 10
+          curl -f http://localhost:3000/health
