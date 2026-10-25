@@ -106,6 +106,26 @@ app.get('/companies', authMiddleware, async (_req, res) => {
   return res.json(companies);
 });
 
+app.post('/companies', authMiddleware, async (req, res) => {
+  try {
+    const { code, name, npwp, address, email } = req.body;
+
+    const company = await prisma.company.create({
+      data: {
+        code,
+        name,
+        npwp,
+        address,
+        email,
+      },
+    });
+
+    return res.status(201).json(company);
+  } catch (error) {
+    return res.status(400).json({ message: 'Failed to create company' });
+  }
+});
+
 app.get('/projects', authMiddleware, async (_req, res) => {
   const projects = await prisma.project.findMany({
     include: {
@@ -121,6 +141,64 @@ app.get('/projects', authMiddleware, async (_req, res) => {
   return res.json(projects);
 });
 
+app.get('/projects/:id', authMiddleware, async (req, res) => {
+  const project = await prisma.project.findUnique({
+    where: { id: req.params.id },
+    include: {
+      company: true,
+      members: {
+        include: {
+          user: true,
+        },
+      },
+      pettyCashRequests: {
+        include: {
+          items: true,
+        },
+      },
+      transactions: true,
+    },
+  });
+
+  if (!project) {
+    return res.status(404).json({ message: 'Project not found' });
+  }
+
+  return res.json(project);
+});
+
+app.post('/projects', authMiddleware, async (req, res) => {
+  try {
+    const {
+      companyId,
+      code,
+      name,
+      status,
+      contractValue,
+      location,
+      clientName,
+      createdById,
+    } = req.body as any;
+
+    const project = await prisma.project.create({
+      data: {
+        companyId,
+        code,
+        name,
+        status: status || 'ACTIVE',
+        contractValue: Number(contractValue || 0),
+        location,
+        clientName,
+        createdById,
+      },
+    });
+
+    return res.status(201).json(project);
+  } catch (error) {
+    return res.status(400).json({ message: 'Failed to create project' });
+  }
+});
+
 app.get('/petty-cash', authMiddleware, async (_req, res) => {
   const requests = await prisma.pettyCashRequest.findMany({
     include: {
@@ -131,6 +209,68 @@ app.get('/petty-cash', authMiddleware, async (_req, res) => {
   });
 
   return res.json(requests);
+});
+
+app.post('/petty-cash', authMiddleware, async (req, res) => {
+  try {
+    const {
+      companyId,
+      projectId,
+      createdById,
+      requestNumber,
+      purpose,
+      note,
+      amount,
+      items,
+    } = req.body as any;
+
+    const request = await prisma.pettyCashRequest.create({
+      data: {
+        companyId,
+        projectId,
+        createdById,
+        requestNumber,
+        requestDate: new Date(),
+        purpose,
+        note,
+        amount: Number(amount || 0),
+        status: 'SUBMITTED',
+        items: {
+          create: (items || []).map((item: any) => ({
+            itemName: item.itemName,
+            category: item.category,
+            quantity: Number(item.quantity || 0),
+            unitPrice: Number(item.unitPrice || 0),
+            totalAmount: Number(item.totalAmount || 0),
+          })),
+        },
+      },
+      include: {
+        items: true,
+      },
+    });
+
+    return res.status(201).json(request);
+  } catch (error) {
+    return res.status(400).json({ message: 'Failed to create petty cash request' });
+  }
+});
+
+app.patch('/petty-cash/:id/status', authMiddleware, async (req, res) => {
+  try {
+    const { status } = req.body as any;
+
+    const request = await prisma.pettyCashRequest.update({
+      where: { id: req.params.id },
+      data: {
+        status,
+      },
+    });
+
+    return res.json(request);
+  } catch (error) {
+    return res.status(400).json({ message: 'Failed to update petty cash status' });
+  }
 });
 
 app.get('/tax-summary', authMiddleware, async (_req, res) => {
@@ -148,6 +288,40 @@ app.get('/tax-summary', authMiddleware, async (_req, res) => {
   );
 
   return res.json(summary);
+});
+
+app.get('/dashboard/summary', authMiddleware, async (_req, res) => {
+  try {
+    const [projectCount, activeProjects, totalBudget, totalTransactions, pettyCashTotal] = await Promise.all([
+      prisma.project.count(),
+      prisma.project.count({ where: { status: 'ACTIVE' } }),
+      prisma.project.aggregate({ _sum: { contractValue: true } }),
+      prisma.transaction.aggregate({
+        _sum: {
+          grossAmount: true,
+          vatAmount: true,
+          withholdingAmount: true,
+          netAmount: true,
+        },
+      }),
+      prisma.pettyCashRequest.aggregate({ _sum: { amount: true } }),
+    ]);
+
+    return res.json({
+      totalProjects: projectCount,
+      activeProjects,
+      totalBudget: Number(totalBudget._sum.contractValue || 0),
+      taxSummary: {
+        gross: Number(totalTransactions._sum.grossAmount || 0),
+        vat: Number(totalTransactions._sum.vatAmount || 0),
+        withholding: Number(totalTransactions._sum.withholdingAmount || 0),
+        net: Number(totalTransactions._sum.netAmount || 0),
+      },
+      pettyCashTotal: Number(pettyCashTotal._sum.amount || 0),
+    });
+  } catch (error) {
+    return res.status(500).json({ message: 'Failed to load dashboard summary' });
+  }
 });
 
 app.listen(port, () => {
