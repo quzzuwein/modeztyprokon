@@ -761,6 +761,42 @@ app.patch('/approvals/:id', authMiddleware, async (req, res) => {
   }
 });
 
+app.get('/reports/summary', authMiddleware, async (_req, res) => {
+  try {
+    const [totalProjects, activeProjects, totalContractValue, totalPettyCash, totalInvoice, totalTax, pendingApprovals] = await Promise.all([
+      prisma.project.count(),
+      prisma.project.count({ where: { status: 'ACTIVE' } }),
+      prisma.project.aggregate({ _sum: { contractValue: true } }),
+      prisma.pettyCashRequest.aggregate({ _sum: { amount: true } }),
+      prisma.invoice.aggregate({ _sum: { netAmount: true } }),
+      prisma.transaction.aggregate({
+        _sum: {
+          vatAmount: true,
+          withholdingAmount: true,
+          netAmount: true,
+        },
+      }),
+      prisma.approval.count({ where: { status: 'PENDING' } }),
+    ]);
+
+    return res.json({
+      totalProjects,
+      activeProjects,
+      totalContractValue: Number(totalContractValue._sum.contractValue || 0),
+      totalPettyCash: Number(totalPettyCash._sum.amount || 0),
+      totalInvoice: Number(totalInvoice._sum.netAmount || 0),
+      totalTax: Number(
+        (totalTax._sum.vatAmount || 0) +
+        (totalTax._sum.withholdingAmount || 0) +
+        (totalTax._sum.netAmount || 0)
+      ),
+      pendingApprovals,
+    });
+  } catch (error) {
+    return res.status(500).json({ message: 'Failed to generate reports summary' });
+  }
+});
+
 app.listen(port, () => {
   console.log(`MODEZTYPROkon API running at http://localhost:${port}`);
 });
