@@ -638,129 +638,6 @@ app.post('/journal-entries', authMiddleware, async (req, res) => {
   }
 });
 
-app.get('/approvals', authMiddleware, async (req, res) => {
-  try {
-    const { entityType, entityId, status } = req.query as { entityType?: string; entityId?: string; status?: string };
-
-    const where: any = {};
-
-    if (entityType) where.entityType = entityType;
-    if (entityId) where.entityId = entityId;
-    if (status) where.status = status;
-
-    const approvals = await prisma.approval.findMany({
-      where,
-      include: {
-        approver: true,
-      },
-      orderBy: { createdAt: 'desc' },
-    });
-
-    return res.json(approvals);
-  } catch (error) {
-    return res.status(500).json({ message: 'Failed to fetch approvals' });
-  }
-});
-
-app.get('/approvals/:id', authMiddleware, async (req, res) => {
-  try {
-    const approval = await prisma.approval.findUnique({
-      where: { id: req.params.id },
-      include: {
-        approver: true,
-      },
-    });
-
-    if (!approval) {
-      return res.status(404).json({ message: 'Approval not found' });
-    }
-
-    return res.json(approval);
-  } catch (error) {
-    return res.status(500).json({ message: 'Failed to fetch approval' });
-  }
-});
-
-app.post('/approvals', authMiddleware, async (req, res) => {
-  try {
-    const { entityType, entityId, approverId, status, note } = req.body as any;
-    const allowedEntities = ['petty_cash', 'invoice', 'project'];
-    const allowedStatuses = ['PENDING', 'APPROVED', 'REJECTED'];
-
-    if (!entityType || !allowedEntities.includes(entityType)) {
-      return res.status(400).json({ message: 'Invalid entityType' });
-    }
-
-    if (!entityId) {
-      return res.status(400).json({ message: 'entityId is required' });
-    }
-
-    if (!approverId) {
-      return res.status(400).json({ message: 'approverId is required' });
-    }
-
-    if (status && !allowedStatuses.includes(status)) {
-      return res.status(400).json({ message: 'Invalid approval status' });
-    }
-
-    const approval = await prisma.approval.create({
-      data: {
-        entityType,
-        entityId,
-        approverId,
-        status: status || 'PENDING',
-        note: note || null,
-      },
-      include: {
-        approver: true,
-      },
-    });
-
-    await syncApprovalEntityStatus(approval.entityType, approval.entityId, approval.status);
-
-    return res.status(201).json(approval);
-  } catch (error) {
-    return res.status(400).json({ message: 'Failed to create approval' });
-  }
-});
-
-app.patch('/approvals/:id', authMiddleware, async (req, res) => {
-  try {
-    const { approverId, status, note } = req.body as any;
-    const allowedStatuses = ['PENDING', 'APPROVED', 'REJECTED'];
-
-    if (status && !allowedStatuses.includes(status)) {
-      return res.status(400).json({ message: 'Invalid approval status' });
-    }
-
-    const existingApproval = await prisma.approval.findUnique({
-      where: { id: req.params.id },
-    });
-
-    if (!existingApproval) {
-      return res.status(404).json({ message: 'Approval not found' });
-    }
-
-    const approval = await prisma.approval.update({
-      where: { id: req.params.id },
-      data: {
-        approverId: approverId || existingApproval.approverId,
-        status: status || existingApproval.status,
-        note: note !== undefined ? note : existingApproval.note,
-      },
-      include: {
-        approver: true,
-      },
-    });
-
-    await syncApprovalEntityStatus(approval.entityType, approval.entityId, approval.status);
-
-    return res.json(approval);
-  } catch (error) {
-    return res.status(400).json({ message: 'Failed to update approval' });
-  }
-});
-
 app.get('/reports/summary', authMiddleware, async (_req, res) => {
   try {
     const [totalProjects, activeProjects, totalContractValue, totalPettyCash, totalInvoice, totalTax, pendingApprovals] = await Promise.all([
@@ -879,6 +756,39 @@ app.get('/reports/finance', authMiddleware, async (_req, res) => {
     });
   } catch (error) {
     return res.status(500).json({ message: 'Failed to generate finance report' });
+  }
+});
+
+app.get('/reports/approvals', authMiddleware, async (_req, res) => {
+  try {
+    const approvals = await prisma.approval.findMany({
+      include: {
+        approver: true,
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    const summary = approvals.reduce(
+      (acc, item) => {
+        acc[item.entityType] = acc[item.entityType] || { total: 0, pending: 0, approved: 0, rejected: 0 };
+        acc[item.entityType].total += 1;
+
+        if (item.status === 'PENDING') acc[item.entityType].pending += 1;
+        if (item.status === 'APPROVED') acc[item.entityType].approved += 1;
+        if (item.status === 'REJECTED') acc[item.entityType].rejected += 1;
+
+        return acc;
+      },
+      {} as Record<string, { total: number; pending: number; approved: number; rejected: number }>
+    );
+
+    return res.json({
+      total: approvals.length,
+      summary,
+      approvals,
+    });
+  } catch (error) {
+    return res.status(500).json({ message: 'Failed to generate approval report' });
   }
 });
 
