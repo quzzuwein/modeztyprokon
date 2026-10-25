@@ -60,6 +60,12 @@ enum TransactionType {
   JOURNAL
 }
 
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
 model Company {
   id          String    @id @default(uuid()) @db.Uuid
   code        String    @unique
@@ -189,7 +195,6 @@ model PettyCashRequest {
   project       Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
   creator       User     @relation(fields: [createdById], references: [id], onDelete: Cascade)
   items         PettyCashItem[]
-  approvals     Approval[]
 
   @@unique([companyId, requestNumber])
 }
@@ -276,14 +281,17 @@ model JournalLine {
 }
 
 model Approval {
-  id          String   @id @default(uuid()) @db.Uuid
-  requestType String
-  requestId   String   @db.Uuid
-  approverId  String   @db.Uuid
-  status      String   @default("PENDING")
-  notes       String?
-  approvedAt  DateTime?
+  id          String         @id @default(uuid()) @db.Uuid
+  entityType  String
+  entityId    String
+  approverId  String         @db.Uuid
+  status      ApprovalStatus @default(PENDING)
+  note        String?
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
 
-  approver    User     @relation(fields: [approverId], references: [id], onDelete: Cascade)
-  pettyCashRequest PettyCashRequest? @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  approver    User           @relation(fields: [approverId], references: [id], onDelete: Cascade)
+
+  @@index([entityType, entityId])
+  @@index([status])
 }
