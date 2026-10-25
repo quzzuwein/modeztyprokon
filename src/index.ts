@@ -6,33 +6,44 @@ import { prisma } from './lib/prisma';
 
 const app = express();
 const port = Number(process.env.PORT || 3000);
-const jwtSecret = process.env.JWT_SECRET || 'modeztyprokon-dev-secret';
+const jwtSecret = process.env.JWT_SECRET;
+
+if (!jwtSecret) {
+  throw new Error('JWT_SECRET is required. Set it in your environment variables.');
+}
 
 app.use(express.json());
+
+const sendError = (res: any, status: number, message: string, details?: any) => {
+  return res.status(status).json({
+    ok: false,
+    message,
+    ...(details ? { details } : {}),
+  });
+};
 
 const authMiddleware = async (req: any, res: any, next: any) => {
   const authHeader = req.headers.authorization;
 
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return res.status(401).json({ message: 'Unauthorized' });
+    return sendError(res, 401, 'Unauthorized');
   }
 
   try {
     const token = authHeader.split(' ')[1];
     const payload = jwt.verify(token, jwtSecret) as { sub: string };
-
     const user = await prisma.user.findUnique({
       where: { id: payload.sub },
     });
 
     if (!user) {
-      return res.status(401).json({ message: 'User not found' });
+      return sendError(res, 401, 'User not found');
     }
 
     req.user = user;
     return next();
   } catch (error) {
-    return res.status(401).json({ message: 'Invalid token' });
+    return sendError(res, 401, 'Invalid token');
   }
 };
 
@@ -47,6 +58,11 @@ const buildTaxSummary = (transactions: any[]) => {
     },
     { gross: 0, vat: 0, withholding: 0, net: 0 }
   );
+};
+
+const safeNumber = (value: any, fallback = 0) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
 };
 
 const syncApprovalEntityStatus = async (entityType: string, entityId: string, status: string) => {
@@ -136,69 +152,89 @@ app.get('/health', async (_req, res) => {
 });
 
 app.post('/auth/login', async (req, res) => {
-  const { username, password } = req.body as { username?: string; password?: string };
+  try {
+    const { username, password } = req.body as { username?: string; password?: string };
 
-  if (!username || !password) {
-    return res.status(400).json({ message: 'Username and password are required' });
+    if (!username || !password) {
+      return sendError(res, 400, 'Username and password are required');
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { username },
+    });
+
+    if (!user) {
+      return sendError(res, 401, 'Invalid credentials');
+    }
+
+    const valid = await bcrypt.compare(password, user.passwordHash);
+
+    if (!valid) {
+      return sendError(res, 401, 'Invalid credentials');
+    }
+
+    const token = jwt.sign(
+      { sub: user.id, username: user.username, email: user.email },
+      jwtSecret,
+      { expiresIn: '1h' }
+    );
+
+    return res.json({
+      token,
+      user: {
+        id: user.id,
+        username: user.username,
+        fullName: user.fullName,
+        email: user.email,
+        companyId: user.companyId,
+      },
+    });
+  } catch (error) {
+    return sendError(res, 500, 'Authentication failed');
   }
-
-  const user = await prisma.user.findUnique({
-    where: { username },
-  });
-
-  if (!user) {
-    return res.status(401).json({ message: 'Invalid credentials' });
-  }
-
-  const valid = await bcrypt.compare(password, user.passwordHash);
-
-  if (!valid) {
-    return res.status(401).json({ message: 'Invalid credentials' });
-  }
-
-  const token = jwt.sign(
-    { sub: user.id, username: user.username, email: user.email },
-    jwtSecret,
-    { expiresIn: '1h' }
-  );
-
-  return res.json({
-    token,
-    user: {
-      id: user.id,
-      username: user.username,
-      fullName: user.fullName,
-      email: user.email,
-      companyId: user.companyId,
-    },
-  });
 });
 
 app.get('/auth/profile', authMiddleware, async (req: any, res) => {
-  const user = await prisma.user.findUnique({
-    where: { id: req.user.id },
-    include: {
-      company: true,
-      projectMembers: true,
-    },
-  });
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: req.user.id },
+      include: {
+        company: true,
+        projectMembers: true,
+      },
+    });
 
-  return res.json(user);
+    if (!user) {
+      return sendError(res, 404, 'User not found');
+    }
+
+    return res.json(user);
+  } catch (error) {
+    return sendError(res, 500, 'Failed to fetch profile');
+  }
 });
 
 app.get('/companies', authMiddleware, async (_req, res) => {
-  const companies = await prisma.company.findMany({
-    include: {
-      projects: true,
-    },
-  });
+  try {
+    const companies = await prisma.company.findMany({
+      include: {
+        projects: true,
+      },
+    });
 
-  return res.json(companies);
+    return res.json(companies);
+  } catch (error) {
+    return sendError(res, 500, 'Failed to fetch companies');
+  }
 });
 
 app.post('/companies', authMiddleware, async (req, res) => {
   try {
     const { code, name, npwp, address, email } = req.body;
+
+    if (!code || !name) {
+      return sendError(res, 400, 'Company code and name are required');
+    }
 
     const company = await prisma.company.create({
       data: {
@@ -212,49 +248,57 @@ app.post('/companies', authMiddleware, async (req, res) => {
 
     return res.status(201).json(company);
   } catch (error) {
-    return res.status(400).json({ message: 'Failed to create company' });
+    return sendError(res, 400, 'Failed to create company');
   }
 });
 
 app.get('/projects', authMiddleware, async (_req, res) => {
-  const projects = await prisma.project.findMany({
-    include: {
-      company: true,
-      members: {
-        include: {
-          user: true,
+  try {
+    const projects = await prisma.project.findMany({
+      include: {
+        company: true,
+        members: {
+          include: {
+            user: true,
+          },
         },
       },
-    },
-  });
+    });
 
-  return res.json(projects);
+    return res.json(projects);
+  } catch (error) {
+    return sendError(res, 500, 'Failed to fetch projects');
+  }
 });
 
 app.get('/projects/:id', authMiddleware, async (req, res) => {
-  const project = await prisma.project.findUnique({
-    where: { id: req.params.id },
-    include: {
-      company: true,
-      members: {
-        include: {
-          user: true,
+  try {
+    const project = await prisma.project.findUnique({
+      where: { id: req.params.id },
+      include: {
+        company: true,
+        members: {
+          include: {
+            user: true,
+          },
         },
-      },
-      pettyCashRequests: {
-        include: {
-          items: true,
+        pettyCashRequests: {
+          include: {
+            items: true,
+          },
         },
+        transactions: true,
       },
-      transactions: true,
-    },
-  });
+    });
 
-  if (!project) {
-    return res.status(404).json({ message: 'Project not found' });
+    if (!project) {
+      return sendError(res, 404, 'Project not found');
+    }
+
+    return res.json(project);
+  } catch (error) {
+    return sendError(res, 500, 'Failed to fetch project');
   }
-
-  return res.json(project);
 });
 
 app.post('/projects', authMiddleware, async (req, res) => {
@@ -270,16 +314,20 @@ app.post('/projects', authMiddleware, async (req, res) => {
       createdById,
     } = req.body as any;
 
+    if (!companyId || !code || !name) {
+      return sendError(res, 400, 'companyId, code, and name are required');
+    }
+
     const project = await prisma.project.create({
       data: {
         companyId,
         code,
         name,
         status: status || 'ACTIVE',
-        contractValue: Number(contractValue || 0),
+        contractValue: safeNumber(contractValue),
         location,
         clientName,
-        createdById,
+        createdById: createdById || req.user.id,
       },
     });
 
@@ -287,20 +335,24 @@ app.post('/projects', authMiddleware, async (req, res) => {
 
     return res.status(201).json(project);
   } catch (error) {
-    return res.status(400).json({ message: 'Failed to create project' });
+    return sendError(res, 400, 'Failed to create project');
   }
 });
 
 app.get('/petty-cash', authMiddleware, async (_req, res) => {
-  const requests = await prisma.pettyCashRequest.findMany({
-    include: {
-      project: true,
-      items: true,
-      creator: true,
-    },
-  });
+  try {
+    const requests = await prisma.pettyCashRequest.findMany({
+      include: {
+        project: true,
+        items: true,
+        creator: true,
+      },
+    });
 
-  return res.json(requests);
+    return res.json(requests);
+  } catch (error) {
+    return sendError(res, 500, 'Failed to fetch petty cash requests');
+  }
 });
 
 app.post('/petty-cash', authMiddleware, async (req, res) => {
@@ -316,24 +368,28 @@ app.post('/petty-cash', authMiddleware, async (req, res) => {
       items,
     } = req.body as any;
 
+    if (!companyId || !projectId || !requestNumber) {
+      return sendError(res, 400, 'companyId, projectId, and requestNumber are required');
+    }
+
     const request = await prisma.pettyCashRequest.create({
       data: {
         companyId,
         projectId,
-        createdById,
+        createdById: createdById || req.user.id,
         requestNumber,
         requestDate: new Date(),
         purpose,
         note,
-        amount: Number(amount || 0),
+        amount: safeNumber(amount),
         status: 'SUBMITTED',
         items: {
           create: (items || []).map((item: any) => ({
             itemName: item.itemName,
             category: item.category,
-            quantity: Number(item.quantity || 0),
-            unitPrice: Number(item.unitPrice || 0),
-            totalAmount: Number(item.totalAmount || 0),
+            quantity: safeNumber(item.quantity),
+            unitPrice: safeNumber(item.unitPrice),
+            totalAmount: safeNumber(item.totalAmount),
           })),
         },
       },
@@ -346,30 +402,37 @@ app.post('/petty-cash', authMiddleware, async (req, res) => {
 
     return res.status(201).json(request);
   } catch (error) {
-    return res.status(400).json({ message: 'Failed to create petty cash request' });
+    return sendError(res, 400, 'Failed to create petty cash request');
   }
 });
 
 app.patch('/petty-cash/:id/status', authMiddleware, async (req, res) => {
   try {
     const { status } = req.body as any;
+    const allowedStatuses = ['SUBMITTED', 'APPROVED', 'REJECTED'];
+
+    if (!status || !allowedStatuses.includes(status)) {
+      return sendError(res, 400, 'Invalid petty cash status');
+    }
 
     const request = await prisma.pettyCashRequest.update({
       where: { id: req.params.id },
-      data: {
-        status,
-      },
+      data: { status },
     });
 
     return res.json(request);
   } catch (error) {
-    return res.status(400).json({ message: 'Failed to update petty cash status' });
+    return sendError(res, 400, 'Failed to update petty cash status');
   }
 });
 
 app.get('/tax-summary', authMiddleware, async (_req, res) => {
-  const transactions = await prisma.transaction.findMany();
-  return res.json(buildTaxSummary(transactions));
+  try {
+    const transactions = await prisma.transaction.findMany();
+    return res.json(buildTaxSummary(transactions));
+  } catch (error) {
+    return sendError(res, 500, 'Failed to calculate tax summary');
+  }
 });
 
 app.get('/tax/transactions', authMiddleware, async (_req, res) => {
@@ -384,7 +447,7 @@ app.get('/tax/transactions', authMiddleware, async (_req, res) => {
 
     return res.json(transactions);
   } catch (error) {
-    return res.status(500).json({ message: 'Failed to fetch tax transactions' });
+    return sendError(res, 500, 'Failed to fetch tax transactions');
   }
 });
 
@@ -402,10 +465,11 @@ app.post('/tax/transactions', authMiddleware, async (req, res) => {
       taxStatus,
     } = req.body as any;
 
-    const computedNet = Number(
-      req.body.netAmount ??
-        (Number(grossAmount || 0) + Number(vatAmount || 0) - Number(withholdingAmount || 0))
-    );
+    if (!companyId || !projectId) {
+      return sendError(res, 400, 'companyId and projectId are required');
+    }
+
+    const computedNet = safeNumber(req.body.netAmount ?? (safeNumber(grossAmount) + safeNumber(vatAmount) - safeNumber(withholdingAmount)));
 
     const transaction = await prisma.transaction.create({
       data: {
@@ -414,9 +478,9 @@ app.post('/tax/transactions', authMiddleware, async (req, res) => {
         partyId,
         type: type || 'EXPENSE',
         description,
-        grossAmount: Number(grossAmount || 0),
-        vatAmount: Number(vatAmount || 0),
-        withholdingAmount: Number(withholdingAmount || 0),
+        grossAmount: safeNumber(grossAmount),
+        vatAmount: safeNumber(vatAmount),
+        withholdingAmount: safeNumber(withholdingAmount),
         netAmount: computedNet,
         taxStatus: taxStatus || 'NON_TAXABLE',
       },
@@ -424,7 +488,7 @@ app.post('/tax/transactions', authMiddleware, async (req, res) => {
 
     return res.status(201).json(transaction);
   } catch (error) {
-    return res.status(400).json({ message: 'Failed to create transaction' });
+    return sendError(res, 400, 'Failed to create transaction');
   }
 });
 
@@ -442,7 +506,7 @@ app.get('/tax/project/:projectId', authMiddleware, async (req, res) => {
       transactions,
     });
   } catch (error) {
-    return res.status(500).json({ message: 'Failed to load project tax summary' });
+    return sendError(res, 500, 'Failed to load project tax summary');
   }
 });
 
@@ -454,7 +518,7 @@ app.get('/tax/summary', authMiddleware, async (_req, res) => {
       transactions,
     });
   } catch (error) {
-    return res.status(500).json({ message: 'Failed to calculate tax summary' });
+    return sendError(res, 500, 'Failed to calculate tax summary');
   }
 });
 
@@ -488,7 +552,7 @@ app.get('/dashboard/summary', authMiddleware, async (_req, res) => {
       pettyCashTotal: Number(pettyCashTotal._sum.amount || 0),
     });
   } catch (error) {
-    return res.status(500).json({ message: 'Failed to load dashboard summary' });
+    return sendError(res, 500, 'Failed to load dashboard summary');
   }
 });
 
@@ -504,7 +568,7 @@ app.get('/invoices', authMiddleware, async (_req, res) => {
 
     return res.json(invoices);
   } catch (error) {
-    return res.status(500).json({ message: 'Failed to fetch invoices' });
+    return sendError(res, 500, 'Failed to fetch invoices');
   }
 });
 
@@ -519,12 +583,12 @@ app.get('/invoices/:id', authMiddleware, async (req, res) => {
     });
 
     if (!invoice) {
-      return res.status(404).json({ message: 'Invoice not found' });
+      return sendError(res, 404, 'Invoice not found');
     }
 
     return res.json(invoice);
   } catch (error) {
-    return res.status(500).json({ message: 'Failed to fetch invoice' });
+    return sendError(res, 500, 'Failed to fetch invoice');
   }
 });
 
@@ -543,9 +607,13 @@ app.post('/invoices', authMiddleware, async (req, res) => {
       status,
     } = req.body as any;
 
-    const netAmount = Number(
+    if (!companyId || !projectId || !invoiceNumber) {
+      return sendError(res, 400, 'companyId, projectId, and invoiceNumber are required');
+    }
+
+    const netAmount = safeNumber(
       req.body.netAmount ??
-        (Number(grossAmount || 0) + Number(vatAmount || 0) - Number(withholdingAmount || 0))
+        (safeNumber(grossAmount) + safeNumber(vatAmount) - safeNumber(withholdingAmount))
     );
 
     const invoice = await prisma.invoice.create({
@@ -556,9 +624,9 @@ app.post('/invoices', authMiddleware, async (req, res) => {
         invoiceNumber,
         invoiceDate: invoiceDate ? new Date(invoiceDate) : new Date(),
         dueDate: dueDate ? new Date(dueDate) : null,
-        grossAmount: Number(grossAmount || 0),
-        vatAmount: Number(vatAmount || 0),
-        withholdingAmount: Number(withholdingAmount || 0),
+        grossAmount: safeNumber(grossAmount),
+        vatAmount: safeNumber(vatAmount),
+        withholdingAmount: safeNumber(withholdingAmount),
         netAmount,
         status: status || 'DRAFT',
       },
@@ -568,7 +636,7 @@ app.post('/invoices', authMiddleware, async (req, res) => {
 
     return res.status(201).json(invoice);
   } catch (error) {
-    return res.status(400).json({ message: 'Failed to create invoice' });
+    return sendError(res, 400, 'Failed to create invoice');
   }
 });
 
@@ -584,7 +652,7 @@ app.get('/journal-entries', authMiddleware, async (_req, res) => {
 
     return res.json(entries);
   } catch (error) {
-    return res.status(500).json({ message: 'Failed to fetch journal entries' });
+    return sendError(res, 500, 'Failed to fetch journal entries');
   }
 });
 
@@ -599,12 +667,12 @@ app.get('/journal-entries/:id', authMiddleware, async (req, res) => {
     });
 
     if (!entry) {
-      return res.status(404).json({ message: 'Journal entry not found' });
+      return sendError(res, 404, 'Journal entry not found');
     }
 
     return res.json(entry);
   } catch (error) {
-    return res.status(500).json({ message: 'Failed to fetch journal entry' });
+    return sendError(res, 500, 'Failed to fetch journal entry');
   }
 });
 
@@ -619,6 +687,10 @@ app.post('/journal-entries', authMiddleware, async (req, res) => {
       lines,
     } = req.body as any;
 
+    if (!companyId || !projectId || !entryNumber) {
+      return sendError(res, 400, 'companyId, projectId, and entryNumber are required');
+    }
+
     const entry = await prisma.journalEntry.create({
       data: {
         companyId,
@@ -629,8 +701,8 @@ app.post('/journal-entries', authMiddleware, async (req, res) => {
         lines: {
           create: (lines || []).map((line: any) => ({
             accountCode: line.accountCode,
-            debit: Number(line.debit || 0),
-            credit: Number(line.credit || 0),
+            debit: safeNumber(line.debit),
+            credit: safeNumber(line.credit),
             description: line.description || null,
           })),
         },
@@ -642,7 +714,130 @@ app.post('/journal-entries', authMiddleware, async (req, res) => {
 
     return res.status(201).json(entry);
   } catch (error) {
-    return res.status(400).json({ message: 'Failed to create journal entry' });
+    return sendError(res, 400, 'Failed to create journal entry');
+  }
+});
+
+app.get('/approvals', authMiddleware, async (req, res) => {
+  try {
+    const { entityType, entityId, status } = req.query as { entityType?: string; entityId?: string; status?: string };
+
+    const where: any = {};
+
+    if (entityType) where.entityType = entityType;
+    if (entityId) where.entityId = entityId;
+    if (status) where.status = status;
+
+    const approvals = await prisma.approval.findMany({
+      where,
+      include: {
+        approver: true,
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    return res.json(approvals);
+  } catch (error) {
+    return sendError(res, 500, 'Failed to fetch approvals');
+  }
+});
+
+app.get('/approvals/:id', authMiddleware, async (req, res) => {
+  try {
+    const approval = await prisma.approval.findUnique({
+      where: { id: req.params.id },
+      include: {
+        approver: true,
+      },
+    });
+
+    if (!approval) {
+      return sendError(res, 404, 'Approval not found');
+    }
+
+    return res.json(approval);
+  } catch (error) {
+    return sendError(res, 500, 'Failed to fetch approval');
+  }
+});
+
+app.post('/approvals', authMiddleware, async (req, res) => {
+  try {
+    const { entityType, entityId, approverId, status, note } = req.body as any;
+    const allowedEntities = ['petty_cash', 'invoice', 'project'];
+    const allowedStatuses = ['PENDING', 'APPROVED', 'REJECTED'];
+
+    if (!entityType || !allowedEntities.includes(entityType)) {
+      return sendError(res, 400, 'Invalid entityType');
+    }
+
+    if (!entityId) {
+      return sendError(res, 400, 'entityId is required');
+    }
+
+    if (!approverId) {
+      return sendError(res, 400, 'approverId is required');
+    }
+
+    if (status && !allowedStatuses.includes(status)) {
+      return sendError(res, 400, 'Invalid approval status');
+    }
+
+    const approval = await prisma.approval.create({
+      data: {
+        entityType,
+        entityId,
+        approverId,
+        status: status || 'PENDING',
+        note: note || null,
+      },
+      include: {
+        approver: true,
+      },
+    });
+
+    await syncApprovalEntityStatus(approval.entityType, approval.entityId, approval.status);
+
+    return res.status(201).json(approval);
+  } catch (error) {
+    return sendError(res, 400, 'Failed to create approval');
+  }
+});
+
+app.patch('/approvals/:id', authMiddleware, async (req, res) => {
+  try {
+    const { approverId, status, note } = req.body as any;
+    const allowedStatuses = ['PENDING', 'APPROVED', 'REJECTED'];
+
+    if (status && !allowedStatuses.includes(status)) {
+      return sendError(res, 400, 'Invalid approval status');
+    }
+
+    const existingApproval = await prisma.approval.findUnique({
+      where: { id: req.params.id },
+    });
+
+    if (!existingApproval) {
+      return sendError(res, 404, 'Approval not found');
+    }
+
+    const approval = await prisma.approval.update({
+      where: { id: req.params.id },
+      data: {
+        approverId: approverId || existingApproval.approverId,
+        status: status || existingApproval.status,
+        note: note !== undefined ? note : existingApproval.note,
+      },
+      include: {
+        approver: true,
+      },
+    });
+
+    await syncApprovalEntityStatus(approval.entityType, approval.entityId, approval.status);
+
+    return res.json(approval);
+  } catch (error) {
+    return sendError(res, 400, 'Failed to update approval');
   }
 });
 
@@ -678,7 +873,7 @@ app.get('/reports/summary', authMiddleware, async (_req, res) => {
       pendingApprovals,
     });
   } catch (error) {
-    return res.status(500).json({ message: 'Failed to generate reports summary' });
+    return sendError(res, 500, 'Failed to generate reports summary');
   }
 });
 
@@ -717,7 +912,7 @@ app.get('/reports/project/:projectId', authMiddleware, async (req, res) => {
     ]);
 
     if (!project) {
-      return res.status(404).json({ message: 'Project not found' });
+      return sendError(res, 404, 'Project not found');
     }
 
     return res.json({
@@ -735,7 +930,7 @@ app.get('/reports/project/:projectId', authMiddleware, async (req, res) => {
       approvalStatus: latestApproval?.status || 'PENDING',
     });
   } catch (error) {
-    return res.status(500).json({ message: 'Failed to generate project report' });
+    return sendError(res, 500, 'Failed to generate project report');
   }
 });
 
@@ -766,7 +961,7 @@ app.get('/reports/finance', authMiddleware, async (_req, res) => {
       netPosition: inflow - outflow,
     });
   } catch (error) {
-    return res.status(500).json({ message: 'Failed to generate finance report' });
+    return sendError(res, 500, 'Failed to generate finance report');
   }
 });
 
@@ -799,7 +994,7 @@ app.get('/reports/approvals', authMiddleware, async (_req, res) => {
       approvals,
     });
   } catch (error) {
-    return res.status(500).json({ message: 'Failed to generate approval report' });
+    return sendError(res, 500, 'Failed to generate approval report');
   }
 });
 
