@@ -411,6 +411,158 @@ app.get('/dashboard/summary', authMiddleware, async (_req, res) => {
   }
 });
 
+app.get('/invoices', authMiddleware, async (_req, res) => {
+  try {
+    const invoices = await prisma.invoice.findMany({
+      orderBy: { createdAt: 'desc' },
+      include: {
+        project: true,
+        party: true,
+      },
+    });
+
+    return res.json(invoices);
+  } catch (error) {
+    return res.status(500).json({ message: 'Failed to fetch invoices' });
+  }
+});
+
+app.get('/invoices/:id', authMiddleware, async (req, res) => {
+  try {
+    const invoice = await prisma.invoice.findUnique({
+      where: { id: req.params.id },
+      include: {
+        project: true,
+        party: true,
+      },
+    });
+
+    if (!invoice) {
+      return res.status(404).json({ message: 'Invoice not found' });
+    }
+
+    return res.json(invoice);
+  } catch (error) {
+    return res.status(500).json({ message: 'Failed to fetch invoice' });
+  }
+});
+
+app.post('/invoices', authMiddleware, async (req, res) => {
+  try {
+    const {
+      companyId,
+      projectId,
+      partyId,
+      invoiceNumber,
+      invoiceDate,
+      dueDate,
+      grossAmount,
+      vatAmount,
+      withholdingAmount,
+      status,
+    } = req.body as any;
+
+    const netAmount = Number(
+      req.body.netAmount ??
+        (Number(grossAmount || 0) + Number(vatAmount || 0) - Number(withholdingAmount || 0))
+    );
+
+    const invoice = await prisma.invoice.create({
+      data: {
+        companyId,
+        projectId,
+        partyId,
+        invoiceNumber,
+        invoiceDate: invoiceDate ? new Date(invoiceDate) : new Date(),
+        dueDate: dueDate ? new Date(dueDate) : null,
+        grossAmount: Number(grossAmount || 0),
+        vatAmount: Number(vatAmount || 0),
+        withholdingAmount: Number(withholdingAmount || 0),
+        netAmount,
+        status: status || 'DRAFT',
+      },
+    });
+
+    return res.status(201).json(invoice);
+  } catch (error) {
+    return res.status(400).json({ message: 'Failed to create invoice' });
+  }
+});
+
+app.get('/journal-entries', authMiddleware, async (_req, res) => {
+  try {
+    const entries = await prisma.journalEntry.findMany({
+      orderBy: { createdAt: 'desc' },
+      include: {
+        project: true,
+        lines: true,
+      },
+    });
+
+    return res.json(entries);
+  } catch (error) {
+    return res.status(500).json({ message: 'Failed to fetch journal entries' });
+  }
+});
+
+app.get('/journal-entries/:id', authMiddleware, async (req, res) => {
+  try {
+    const entry = await prisma.journalEntry.findUnique({
+      where: { id: req.params.id },
+      include: {
+        project: true,
+        lines: true,
+      },
+    });
+
+    if (!entry) {
+      return res.status(404).json({ message: 'Journal entry not found' });
+    }
+
+    return res.json(entry);
+  } catch (error) {
+    return res.status(500).json({ message: 'Failed to fetch journal entry' });
+  }
+});
+
+app.post('/journal-entries', authMiddleware, async (req, res) => {
+  try {
+    const {
+      companyId,
+      projectId,
+      entryNumber,
+      description,
+      postedAt,
+      lines,
+    } = req.body as any;
+
+    const entry = await prisma.journalEntry.create({
+      data: {
+        companyId,
+        projectId,
+        entryNumber,
+        description,
+        postedAt: postedAt ? new Date(postedAt) : null,
+        lines: {
+          create: (lines || []).map((line: any) => ({
+            accountCode: line.accountCode,
+            debit: Number(line.debit || 0),
+            credit: Number(line.credit || 0),
+            description: line.description || null,
+          })),
+        },
+      },
+      include: {
+        lines: true,
+      },
+    });
+
+    return res.status(201).json(entry);
+  } catch (error) {
+    return res.status(400).json({ message: 'Failed to create journal entry' });
+  }
+});
+
 app.listen(port, () => {
   console.log(`MODEZTYPROkon API running at http://localhost:${port}`);
 });
