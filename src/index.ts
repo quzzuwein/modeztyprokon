@@ -797,6 +797,91 @@ app.get('/reports/summary', authMiddleware, async (_req, res) => {
   }
 });
 
+app.get('/reports/project/:projectId', authMiddleware, async (req, res) => {
+  try {
+    const projectId = req.params.projectId;
+
+    const [project, pettyCash, invoiceSummary, taxSummary, latestApproval] = await Promise.all([
+      prisma.project.findUnique({
+        where: { id: projectId },
+      }),
+      prisma.pettyCashRequest.aggregate({
+        where: { projectId },
+        _sum: { amount: true },
+      }),
+      prisma.invoice.aggregate({
+        where: { projectId },
+        _sum: { netAmount: true },
+      }),
+      prisma.transaction.aggregate({
+        where: { projectId },
+        _sum: {
+          grossAmount: true,
+          vatAmount: true,
+          withholdingAmount: true,
+          netAmount: true,
+        },
+      }),
+      prisma.approval.findFirst({
+        where: { entityType: 'project' },
+        orderBy: { createdAt: 'desc' },
+      }),
+    ]);
+
+    if (!project) {
+      return res.status(404).json({ message: 'Project not found' });
+    }
+
+    return res.json({
+      projectId: project.id,
+      projectName: project.name,
+      contractValue: Number(project.contractValue || 0),
+      totalPettyCash: Number(pettyCash._sum.amount || 0),
+      totalInvoice: Number(invoiceSummary._sum.netAmount || 0),
+      taxSummary: {
+        gross: Number(taxSummary._sum.grossAmount || 0),
+        vat: Number(taxSummary._sum.vatAmount || 0),
+        withholding: Number(taxSummary._sum.withholdingAmount || 0),
+        net: Number(taxSummary._sum.netAmount || 0),
+      },
+      approvalStatus: latestApproval?.status || 'PENDING',
+    });
+  } catch (error) {
+    return res.status(500).json({ message: 'Failed to generate project report' });
+  }
+});
+
+app.get('/reports/finance', authMiddleware, async (_req, res) => {
+  try {
+    const [pettyCash, invoices, taxTransactions] = await Promise.all([
+      prisma.pettyCashRequest.aggregate({
+        _sum: { amount: true },
+      }),
+      prisma.invoice.aggregate({
+        _sum: { netAmount: true },
+      }),
+      prisma.transaction.findMany(),
+    ]);
+
+    const taxSummary = buildTaxSummary(taxTransactions);
+    const totalPettyCash = Number(pettyCash._sum.amount || 0);
+    const totalInvoice = Number(invoices._sum.netAmount || 0);
+    const inflow = totalInvoice;
+    const outflow = totalPettyCash + Number(taxSummary.net || 0);
+
+    return res.json({
+      totalPettyCash,
+      totalInvoice,
+      taxSummary,
+      inflow,
+      outflow,
+      netPosition: inflow - outflow,
+    });
+  } catch (error) {
+    return res.status(500).json({ message: 'Failed to generate finance report' });
+  }
+});
+
 app.listen(port, () => {
   console.log(`MODEZTYPROkon API running at http://localhost:${port}`);
 });
