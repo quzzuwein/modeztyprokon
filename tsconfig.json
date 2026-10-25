@@ -8,8 +8,9 @@
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true,
     "outDir": "dist",
-    "rootDir": "src",
-    "typeRoots": ["./node_modules/@types"]
+    "rootDir": ".",
+    "typeRoots": ["./node_modules/@types"],
+    "lib": ["ES2020"]
   },
   "include": ["src/**/*.ts", "prisma/**/*.ts"],
   "exclude": ["node_modules", "dist"]
