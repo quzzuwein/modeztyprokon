@@ -1,12 +1,12 @@
 import 'dotenv/config';
 import express from 'express';
-import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
 import { prisma } from './lib/prisma';
 
 const app = express();
-const PORT = Number(process.env.PORT || 3000);
-const JWT_SECRET = process.env.JWT_SECRET || 'modeztyprokon-dev-secret';
+const port = Number(process.env.PORT || 3000);
+const jwtSecret = process.env.JWT_SECRET || 'modeztyprokon-dev-secret';
 
 app.use(express.json());
 
@@ -17,11 +17,13 @@ const authMiddleware = async (req: any, res: any, next: any) => {
     return res.status(401).json({ message: 'Unauthorized' });
   }
 
-  const token = authHeader.split(' ')[1];
-
   try {
-    const payload = jwt.verify(token, JWT_SECRET) as { sub: string };
-    const user = await prisma.user.findUnique({ where: { id: payload.sub } });
+    const token = authHeader.split(' ')[1];
+    const payload = jwt.verify(token, jwtSecret) as { sub: string };
+
+    const user = await prisma.user.findUnique({
+      where: { id: payload.sub },
+    });
 
     if (!user) {
       return res.status(401).json({ message: 'User not found' });
@@ -34,18 +36,25 @@ const authMiddleware = async (req: any, res: any, next: any) => {
   }
 };
 
-app.get('/health', (_req, res) => {
-  res.json({ ok: true, app: 'MODEZTYPROkon API' });
+app.get('/health', async (_req, res) => {
+  try {
+    await prisma.$queryRaw`SELECT 1`;
+    res.json({ ok: true, app: 'MODEZTYPROkon API', db: 'connected' });
+  } catch (error) {
+    res.status(500).json({ ok: false, app: 'MODEZTYPROkon API', db: 'disconnected' });
+  }
 });
 
 app.post('/auth/login', async (req, res) => {
   const { username, password } = req.body as { username?: string; password?: string };
 
   if (!username || !password) {
-    return res.status(400).json({ message: 'username and password are required' });
+    return res.status(400).json({ message: 'Username and password are required' });
   }
 
-  const user = await prisma.user.findUnique({ where: { username } });
+  const user = await prisma.user.findUnique({
+    where: { username },
+  });
 
   if (!user) {
     return res.status(401).json({ message: 'Invalid credentials' });
@@ -57,9 +66,11 @@ app.post('/auth/login', async (req, res) => {
     return res.status(401).json({ message: 'Invalid credentials' });
   }
 
-  const token = jwt.sign({ sub: user.id, username: user.username }, JWT_SECRET, {
-    expiresIn: '1h',
-  });
+  const token = jwt.sign(
+    { sub: user.id, username: user.username, email: user.email },
+    jwtSecret,
+    { expiresIn: '1h' }
+  );
 
   return res.json({
     token,
@@ -73,11 +84,22 @@ app.post('/auth/login', async (req, res) => {
   });
 });
 
+app.get('/auth/profile', authMiddleware, async (req: any, res) => {
+  const user = await prisma.user.findUnique({
+    where: { id: req.user.id },
+    include: {
+      company: true,
+      projectMembers: true,
+    },
+  });
+
+  return res.json(user);
+});
+
 app.get('/companies', authMiddleware, async (_req, res) => {
   const companies = await prisma.company.findMany({
     include: {
       projects: true,
-      users: true,
     },
   });
 
@@ -128,6 +150,6 @@ app.get('/tax-summary', authMiddleware, async (_req, res) => {
   return res.json(summary);
 });
 
-app.listen(PORT, () => {
-  console.log(`MODEZTYPROkon API running on http://localhost:${PORT}`);
+app.listen(port, () => {
+  console.log(`MODEZTYPROkon API running at http://localhost:${port}`);
 });
