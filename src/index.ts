@@ -49,6 +49,77 @@ const buildTaxSummary = (transactions: any[]) => {
   );
 };
 
+const syncApprovalEntityStatus = async (entityType: string, entityId: string, status: string) => {
+  if (entityType === 'petty_cash') {
+    if (status === 'APPROVED') {
+      await prisma.pettyCashRequest.update({
+        where: { id: entityId },
+        data: { status: 'APPROVED' },
+      });
+      return;
+    }
+
+    if (status === 'REJECTED') {
+      await prisma.pettyCashRequest.update({
+        where: { id: entityId },
+        data: { status: 'REJECTED' },
+      });
+      return;
+    }
+
+    await prisma.pettyCashRequest.update({
+      where: { id: entityId },
+      data: { status: 'SUBMITTED' },
+    });
+    return;
+  }
+
+  if (entityType === 'invoice') {
+    if (status === 'APPROVED') {
+      await prisma.invoice.update({
+        where: { id: entityId },
+        data: { status: 'APPROVED' },
+      });
+      return;
+    }
+
+    if (status === 'REJECTED') {
+      await prisma.invoice.update({
+        where: { id: entityId },
+        data: { status: 'REJECTED' },
+      });
+      return;
+    }
+
+    await prisma.invoice.update({
+      where: { id: entityId },
+      data: { status: 'VERIFIED' },
+    });
+    return;
+  }
+
+  if (entityType === 'project') {
+    return;
+  }
+};
+
+const createApprovalRecord = async (
+  entityType: string,
+  entityId: string,
+  approverId: string,
+  note?: string
+) => {
+  return prisma.approval.create({
+    data: {
+      entityType,
+      entityId,
+      approverId,
+      status: 'PENDING',
+      note: note || 'Auto-generated approval',
+    },
+  });
+};
+
 app.get('/health', async (_req, res) => {
   try {
     await prisma.$queryRaw`SELECT 1`;
@@ -262,6 +333,8 @@ app.post('/petty-cash', authMiddleware, async (req, res) => {
         items: true,
       },
     });
+
+    await createApprovalRecord('petty_cash', request.id, createdById || req.user.id, 'Pending petty cash approval');
 
     return res.status(201).json(request);
   } catch (error) {
@@ -483,6 +556,8 @@ app.post('/invoices', authMiddleware, async (req, res) => {
       },
     });
 
+    await createApprovalRecord('invoice', invoice.id, req.user.id, 'Pending invoice approval');
+
     return res.status(201).json(invoice);
   } catch (error) {
     return res.status(400).json({ message: 'Failed to create invoice' });
@@ -560,6 +635,129 @@ app.post('/journal-entries', authMiddleware, async (req, res) => {
     return res.status(201).json(entry);
   } catch (error) {
     return res.status(400).json({ message: 'Failed to create journal entry' });
+  }
+});
+
+app.get('/approvals', authMiddleware, async (req, res) => {
+  try {
+    const { entityType, entityId, status } = req.query as { entityType?: string; entityId?: string; status?: string };
+
+    const where: any = {};
+
+    if (entityType) where.entityType = entityType;
+    if (entityId) where.entityId = entityId;
+    if (status) where.status = status;
+
+    const approvals = await prisma.approval.findMany({
+      where,
+      include: {
+        approver: true,
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    return res.json(approvals);
+  } catch (error) {
+    return res.status(500).json({ message: 'Failed to fetch approvals' });
+  }
+});
+
+app.get('/approvals/:id', authMiddleware, async (req, res) => {
+  try {
+    const approval = await prisma.approval.findUnique({
+      where: { id: req.params.id },
+      include: {
+        approver: true,
+      },
+    });
+
+    if (!approval) {
+      return res.status(404).json({ message: 'Approval not found' });
+    }
+
+    return res.json(approval);
+  } catch (error) {
+    return res.status(500).json({ message: 'Failed to fetch approval' });
+  }
+});
+
+app.post('/approvals', authMiddleware, async (req, res) => {
+  try {
+    const { entityType, entityId, approverId, status, note } = req.body as any;
+    const allowedEntities = ['petty_cash', 'invoice', 'project'];
+    const allowedStatuses = ['PENDING', 'APPROVED', 'REJECTED'];
+
+    if (!entityType || !allowedEntities.includes(entityType)) {
+      return res.status(400).json({ message: 'Invalid entityType' });
+    }
+
+    if (!entityId) {
+      return res.status(400).json({ message: 'entityId is required' });
+    }
+
+    if (!approverId) {
+      return res.status(400).json({ message: 'approverId is required' });
+    }
+
+    if (status && !allowedStatuses.includes(status)) {
+      return res.status(400).json({ message: 'Invalid approval status' });
+    }
+
+    const approval = await prisma.approval.create({
+      data: {
+        entityType,
+        entityId,
+        approverId,
+        status: status || 'PENDING',
+        note: note || null,
+      },
+      include: {
+        approver: true,
+      },
+    });
+
+    await syncApprovalEntityStatus(approval.entityType, approval.entityId, approval.status);
+
+    return res.status(201).json(approval);
+  } catch (error) {
+    return res.status(400).json({ message: 'Failed to create approval' });
+  }
+});
+
+app.patch('/approvals/:id', authMiddleware, async (req, res) => {
+  try {
+    const { approverId, status, note } = req.body as any;
+    const allowedStatuses = ['PENDING', 'APPROVED', 'REJECTED'];
+
+    if (status && !allowedStatuses.includes(status)) {
+      return res.status(400).json({ message: 'Invalid approval status' });
+    }
+
+    const existingApproval = await prisma.approval.findUnique({
+      where: { id: req.params.id },
+    });
+
+    if (!existingApproval) {
+      return res.status(404).json({ message: 'Approval not found' });
+    }
+
+    const approval = await prisma.approval.update({
+      where: { id: req.params.id },
+      data: {
+        approverId: approverId || existingApproval.approverId,
+        status: status || existingApproval.status,
+        note: note !== undefined ? note : existingApproval.note,
+      },
+      include: {
+        approver: true,
+      },
+    });
+
+    await syncApprovalEntityStatus(approval.entityType, approval.entityId, approval.status);
+
+    return res.json(approval);
+  } catch (error) {
+    return res.status(400).json({ message: 'Failed to update approval' });
   }
 });
 
