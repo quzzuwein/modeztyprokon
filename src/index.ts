@@ -36,6 +36,19 @@ const authMiddleware = async (req: any, res: any, next: any) => {
   }
 };
 
+const buildTaxSummary = (transactions: any[]) => {
+  return transactions.reduce(
+    (acc, item) => {
+      acc.gross += Number(item.grossAmount || 0);
+      acc.vat += Number(item.vatAmount || 0);
+      acc.withholding += Number(item.withholdingAmount || 0);
+      acc.net += Number(item.netAmount || 0);
+      return acc;
+    },
+    { gross: 0, vat: 0, withholding: 0, net: 0 }
+  );
+};
+
 app.get('/health', async (_req, res) => {
   try {
     await prisma.$queryRaw`SELECT 1`;
@@ -275,19 +288,93 @@ app.patch('/petty-cash/:id/status', authMiddleware, async (req, res) => {
 
 app.get('/tax-summary', authMiddleware, async (_req, res) => {
   const transactions = await prisma.transaction.findMany();
+  return res.json(buildTaxSummary(transactions));
+});
 
-  const summary = transactions.reduce(
-    (acc, item) => {
-      acc.gross += Number(item.grossAmount);
-      acc.vat += Number(item.vatAmount);
-      acc.withholding += Number(item.withholdingAmount);
-      acc.net += Number(item.netAmount);
-      return acc;
-    },
-    { gross: 0, vat: 0, withholding: 0, net: 0 }
-  );
+app.get('/tax/transactions', authMiddleware, async (_req, res) => {
+  try {
+    const transactions = await prisma.transaction.findMany({
+      orderBy: { createdAt: 'desc' },
+      include: {
+        project: true,
+        party: true,
+      },
+    });
 
-  return res.json(summary);
+    return res.json(transactions);
+  } catch (error) {
+    return res.status(500).json({ message: 'Failed to fetch tax transactions' });
+  }
+});
+
+app.post('/tax/transactions', authMiddleware, async (req, res) => {
+  try {
+    const {
+      companyId,
+      projectId,
+      partyId,
+      type,
+      description,
+      grossAmount,
+      vatAmount,
+      withholdingAmount,
+      taxStatus,
+    } = req.body as any;
+
+    const computedNet = Number(
+      req.body.netAmount ??
+        (Number(grossAmount || 0) + Number(vatAmount || 0) - Number(withholdingAmount || 0))
+    );
+
+    const transaction = await prisma.transaction.create({
+      data: {
+        companyId,
+        projectId,
+        partyId,
+        type: type || 'EXPENSE',
+        description,
+        grossAmount: Number(grossAmount || 0),
+        vatAmount: Number(vatAmount || 0),
+        withholdingAmount: Number(withholdingAmount || 0),
+        netAmount: computedNet,
+        taxStatus: taxStatus || 'NON_TAXABLE',
+      },
+    });
+
+    return res.status(201).json(transaction);
+  } catch (error) {
+    return res.status(400).json({ message: 'Failed to create transaction' });
+  }
+});
+
+app.get('/tax/project/:projectId', authMiddleware, async (req, res) => {
+  try {
+    const transactions = await prisma.transaction.findMany({
+      where: { projectId: req.params.projectId },
+      include: { project: true, party: true },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    return res.json({
+      projectId: req.params.projectId,
+      summary: buildTaxSummary(transactions),
+      transactions,
+    });
+  } catch (error) {
+    return res.status(500).json({ message: 'Failed to load project tax summary' });
+  }
+});
+
+app.get('/tax/summary', authMiddleware, async (_req, res) => {
+  try {
+    const transactions = await prisma.transaction.findMany();
+    return res.json({
+      summary: buildTaxSummary(transactions),
+      transactions,
+    });
+  } catch (error) {
+    return res.status(500).json({ message: 'Failed to calculate tax summary' });
+  }
 });
 
 app.get('/dashboard/summary', authMiddleware, async (_req, res) => {
