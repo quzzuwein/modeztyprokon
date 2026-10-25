@@ -99,6 +99,12 @@ const syncApprovalEntityStatus = async (entityType: string, entityId: string, st
   }
 
   if (entityType === 'project') {
+    const projectStatus = status === 'APPROVED' ? 'ACTIVE' : status === 'REJECTED' ? 'ON_HOLD' : 'ACTIVE';
+
+    await prisma.project.update({
+      where: { id: entityId },
+      data: { status: projectStatus },
+    });
     return;
   }
 };
@@ -276,6 +282,8 @@ app.post('/projects', authMiddleware, async (req, res) => {
         createdById,
       },
     });
+
+    await createApprovalRecord('project', project.id, createdById || req.user.id, 'Pending project approval');
 
     return res.status(201).json(project);
   } catch (error) {
@@ -700,7 +708,10 @@ app.get('/reports/project/:projectId', authMiddleware, async (req, res) => {
         },
       }),
       prisma.approval.findFirst({
-        where: { entityType: 'project' },
+        where: {
+          entityType: 'project',
+          entityId: projectId,
+        },
         orderBy: { createdAt: 'desc' },
       }),
     ]);
