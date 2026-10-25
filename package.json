@@ -9,7 +9,10 @@
     "start": "node dist/index.js",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
-    "prisma:seed": "ts-node prisma/seed.ts"
+    "prisma:seed": "ts-node prisma/seed.ts",
+    "smoke:test": "ts-node --transpile-only scripts/smoke-test.ts",
+    "deploy:staging": "NODE_ENV=staging bash scripts/deploy.sh",
+    "deploy:prod": "NODE_ENV=production bash scripts/deploy.sh"
   },
   "dependencies": {
     "@prisma/client": "^5.17.0",
